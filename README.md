@@ -7,7 +7,7 @@ An unofficial Windows runtime for the Nintendo 64 version of Gauntlet Legends, w
 
 ## What you need
 
-A Windows PC and your own USA Nintendo 64 copy of Gauntlet Legends in `.z64` format. The ROM is sold separately from this project and is not included in the download.
+A Windows PC and your own USA Nintendo 64 copy of Gauntlet Legends in `.z64` format. The Rom is not included in this download you will have to supply your own copy of the game
 
 ## How to play
 
