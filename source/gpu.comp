@@ -1,0 +1,193 @@
+#version 450
+layout(local_size_x=8,local_size_y=8) in;
+struct Vertex {float x,y,z,q,u,v;uint shade,pad;};
+struct Tri {
+ Vertex a,b,c;
+ uint tag,fmt,src,stride;
+ int os,ot,w,h;
+ uint axes,pal,prim,env,ks,kc,lod,cycle;
+ uint eq[4];uint clip0,clip1,mode,bank;
+};
+layout(std430,binding=0) buffer Frame {
+ uint native[183040],owners[91520];
+ uint scene[12441600],outputData[12441600];
+ Tri tri[65536];uint pal[1048576],ram[2097152],tone[256],valid[183040];
+} f;
+layout(push_constant) uniform Options {int scale,aa,smoothTex,pass; int outW,outH,af,hud;} opt;
+ivec2 size(){if(opt.outH>0)return ivec2(opt.outW,opt.outH);return ivec2(opt.pass>>1,220)*opt.scale;}
+int indexOf(ivec2 p){p=clamp(p,ivec2(0),ivec2((opt.pass>>1)-1,219));return p.y*(opt.pass>>1)+p.x;}
+uint idAt(int i){return (f.owners[i/2]>>((i&1)*16))&65535u;}
+vec3 rgb(uint c){return vec3(c>>16,(c>>8)&255u,c&255u)/255.;}
+uint packRGB(vec3 c){uvec3 k=uvec3(clamp(c,0.,1.)*255.+0.5);return (k.r<<16)|(k.g<<8)|k.b;}
+// All colour samples and surface IDs come from the same completed frame.
+vec3 resolve(vec2 pos){
+ ivec2 p=ivec2(pos);int i=indexOf(p);vec3 c=rgb(f.native[i]);uint id=idAt(i);
+ if(id==0u || opt.smoothTex==0)return c;
+ vec2 delta=fract(pos)-.5,w=abs(delta);ivec2 stepDir=ivec2(sign(delta));
+ int x=indexOf(p+ivec2(stepDir.x,0)),y=indexOf(p+ivec2(0,stepDir.y)),xy=indexOf(p+stepDir);
+ vec3 cx=idAt(x)==id?rgb(f.native[x]):c,cy=idAt(y)==id?rgb(f.native[y]):c;
+ vec3 corner=idAt(xy)==id?rgb(f.native[xy]):c;
+ return mix(mix(c,cx,w.x),mix(cy,corner,w.x),w.y);
+}
+float luma(vec3 c){return dot(c,vec3(.299,.587,.114));}
+vec3 sceneAt(ivec2 p){p=clamp(p,ivec2(0),size()-1);return rgb(f.scene[p.y*size().x+p.x]);}
+vec3 linearAt(vec2 p){ivec2 a=ivec2(floor(p));vec2 t=fract(p);return mix(mix(sceneAt(a),sceneAt(a+ivec2(1,0)),t.x),mix(sceneAt(a+ivec2(0,1)),sceneAt(a+1),t.x),t.y);}
+vec3 fxaa(ivec2 p){
+ vec3 c=sceneAt(p);if(idAt(indexOf(opt.outH>0?ivec2((vec2(p)+.5)*vec2(opt.pass>>1,220)/vec2(size())):p/opt.scale))==0u)return c;
+ float nw=luma(sceneAt(p-1)),ne=luma(sceneAt(p+ivec2(1,-1))),sw=luma(sceneAt(p+ivec2(-1,1))),se=luma(sceneAt(p+1));
+ float lo=min(luma(c),min(min(nw,ne),min(sw,se))),hi=max(luma(c),max(max(nw,ne),max(sw,se)));
+ if(hi-lo<max(.047,hi*.125))return c;
+ vec2 d=vec2(sw+se-nw-ne,nw+sw-ne-se);d=clamp(d/(min(abs(d.x),abs(d.y))+max(.008,(nw+ne+sw+se)/32.)),vec2(-8),vec2(8));
+ vec3 a=.5*(linearAt(p-d/6.)+linearAt(p+d/6.)),b=.5*a+.25*(linearAt(p-.5*d)+linearAt(p+.5*d));
+ return luma(b)<lo || luma(b)>hi?a:b;
+}
+vec4 rgba(uint x){return vec4(x>>24,(x>>16)&255u,(x>>8)&255u,x&255u)/255.;}
+uint byteAt(uint p){return (f.ram[p>>2]>>((p&3u)*8u))&255u;}
+int tileAxis(int x,int origin,int extent,uint mask,uint mode,uint shift){
+ x=shift<=10u?(x>>shift):(x<<int(16u-shift));x-=origin;
+ if((mode&2u)!=0u || mask==0u)x=clamp(x,0,max(0,extent-1));
+ if(mask!=0u){int period=1<<mask;if((mode&1u)!=0u && (x&period)!=0)x=~x;x&=period-1;}
+ return x;
+}
+vec4 fetchTile(uint k,ivec2 uv){
+ uint axes=f.tri[k].axes,fmt=f.tri[k].fmt,sz=fmt>>8;
+ int u=tileAxis(uv.x,f.tri[k].os,f.tri[k].w,axes&15u,(axes>>8)&3u,(axes>>12)&15u);
+ int v=tileAxis(uv.y,f.tri[k].ot,f.tri[k].h,(axes>>4)&15u,(axes>>10)&3u,(axes>>16)&15u);
+ uint p=f.tri[k].src+uint(v)*f.tri[k].stride+((uint(u)<<sz)>>1);
+ if(p>=8388605u)return vec4(0);
+ uint c=byteAt(p),type=(fmt>>4)&15u;
+ if(sz==0u)c=(c>>((u&1)==0?4:0))&15u;
+ if(type==2u)return rgba(f.pal[(f.tri[k].pal%4096u)*256u+c+(sz==0u?16u*f.tri[k].bank:0u)]);
+ if(type==0u){
+  if(sz==3u)return vec4(c,byteAt(p+1),byteAt(p+2),byteAt(p+3))/255.;
+  uint t=c*256u+byteAt(p+1);return vec4(vec3(t>>11,(t>>6)&31u,(t>>1)&31u)/31.,float(t&1u));
+ }
+ if(type==3u){
+  if(sz==0u)return vec4(vec3(float(c>>1)/7.),float(c&1u));
+  if(sz==1u)return vec4(vec3(float(c>>4)/15.),float(c&15u)/15.);
+  return vec4(vec3(float(c)/255.),float(byteAt(p+1))/255.);
+ }
+ float q=float(c)/(sz==0u?15.:255.);return vec4(q,q,q,type==4u?q:1.);
+}
+vec2 uvAt(uint k,vec3 b){
+ vec3 q=b*vec3(f.tri[k].a.q,f.tri[k].b.q,f.tri[k].c.q);
+ return (q.x*vec2(f.tri[k].a.u,f.tri[k].a.v)+q.y*vec2(f.tri[k].b.u,f.tri[k].b.v)+q.z*vec2(f.tri[k].c.u,f.tri[k].c.v))/max(dot(q,vec3(1)),1e-12);
+}
+vec4 linearTex(uint k,vec2 uv){
+ ivec2 a=ivec2(floor(uv));vec2 t=fract(uv);
+ return mix(mix(fetchTile(k,a),fetchTile(k,a+ivec2(1,0)),t.x),mix(fetchTile(k,a+ivec2(0,1)),fetchTile(k,a+1),t.x),t.y);
+}
+vec4 sampleTex(uint k,vec3 b,vec3 dx,vec3 dy){
+ vec2 uv=uvAt(k,b);
+ if(opt.af==0)return fetchTile(k,ivec2(uv));
+ vec2 x=uvAt(k,b+dx)-uv,y=uvAt(k,b+dy)-uv;
+ // Eigenvectors of the texture footprint give the long axis even on rotated surfaces.
+ float a=x.x*x.x+y.x*y.x,c=x.y*x.y+y.y*y.y,h=x.x*x.y+y.x*y.y;
+ float mid=(a+c)*.5,rad=length(vec2((a-c)*.5,h));
+ float major=sqrt(max(0.,mid+rad)),minor=max(1.,sqrt(max(0.,mid-rad)));
+ int n=int(clamp(ceil(major/minor),1.,float(opt.af)));
+ if(n==1)return linearTex(k,uv);
+ vec2 axis=abs(h)>1e-8?normalize(vec2(h,mid+rad-a)):(a>=c?vec2(1,0):vec2(0,1));
+ vec2 span=axis*min(major,minor*float(opt.af));vec4 sum=vec4(0);
+ for(int i=0;i<n;i++)sum+=linearTex(k,uv+((float(i)+.5)/float(n)-.5)*span);
+ return sum/float(n);
+}
+vec4 shadeAt(uint k,vec4 tex,vec4 shade){
+ vec4 pr=rgba(f.tri[k].prim),env=rgba(f.tri[k].env);
+ switch(f.tri[k].mode){
+ case 1u:return tex;
+ case 2u:return vec4(tex.rgb,tex.a*pr.a);
+ case 3u:return vec4(tex.rgb*rgba(f.tri[k].ks).rgb,tex.a);
+ case 4u:return vec4(pr.rgb,tex.a*env.a);
+ case 5u:return vec4(tex.rgb*shade.rgb,tex.a);
+ case 6u:return vec4(pr.rgb*tex.rgb,1.);
+ }
+ vec4 v[17]=vec4[17](vec4(0),tex,tex,pr,shade,env,vec4(1),vec4(0),vec4(0),tex.aaaa,tex.aaaa,pr.aaaa,shade.aaaa,env.aaaa,vec4(float(f.tri[k].lod)/255.),rgba(f.tri[k].ks),rgba(f.tri[k].kc));
+ for(uint i=f.tri[k].cycle==1u?0u:1u;i<2u;i++){
+  uint r=f.tri[k].eq[i*2],a=f.tri[k].eq[i*2+1];
+  vec3 color=(v[r&255u].rgb-v[(r>>8)&255u].rgb)*v[(r>>16)&255u].rgb+v[r>>24].rgb;
+  float alpha=(v[a&255u].a-v[(a>>8)&255u].a)*v[(a>>16)&255u].a+v[a>>24].a;
+  v[0]=clamp(vec4(color,alpha),0.,1.);v[8]=v[0].aaaa;
+ }
+ return v[0];
+}
+// Validate the guest's visible texel once per original pixel.
+uint validOwner(ivec2 p){
+ int i=indexOf(p);uint k=idAt(i);if(k==0u || f.tri[k].tag!=k)return 0u;
+ vec2 a=vec2(f.tri[k].a.x,f.tri[k].a.y);
+ vec2 b=vec2(f.tri[k].b.x,f.tri[k].b.y)-a,c=vec2(f.tri[k].c.x,f.tri[k].c.y)-a;
+ float area=b.x*c.y-b.y*c.x;if(abs(area)<.01)return 0u;
+ vec2 d=vec2(p)+.5-vec2(((opt.pass>>1)-416)/2,0)-a;
+ vec3 dx=vec3(b.y-c.y,c.y,-b.y)/area,dy=vec3(c.x-b.x,-c.x,b.x)/area;
+ vec3 bw=vec3(1,0,0)+dx*d.x+dy*d.y;
+ vec4 baseShade=bw.x*rgba(f.tri[k].a.shade)+bw.y*rgba(f.tri[k].b.shade)+bw.z*rgba(f.tri[k].c.shade);
+ vec4 baseTex=f.tri[k].fmt==0u?baseShade:fetchTile(k,ivec2(uvAt(k,bw)));
+ vec3 error=abs(shadeAt(k,baseTex,baseShade).rgb-rgb(f.native[i]));
+ return max(error.r,max(error.g,error.b))>.045?0u:k;
+}
+bool hit(uint id,vec2 pos,inout float nearest,inout vec3 color){
+ uint k=id%65536u;if(id==0u || f.tri[k].tag!=id)return false;
+ vec2 a=vec2(f.tri[k].a.x,f.tri[k].a.y),b=vec2(f.tri[k].b.x,f.tri[k].b.y)-a,c=vec2(f.tri[k].c.x,f.tri[k].c.y)-a,d=pos-a;
+ float area=b.x*c.y-b.y*c.x;if(abs(area)<.01)return false;
+ vec3 dx=vec3(b.y-c.y,c.y,-b.y)/area,dy=vec3(c.x-b.x,-c.x,b.x)/area;
+ vec3 w=vec3(1,0,0)+dx*d.x+dy*d.y;
+ if(min(w.x,min(w.y,w.z))<-.00001)return false;
+ float z=dot(w,vec3(f.tri[k].a.z,f.tri[k].b.z,f.tri[k].c.z));
+ if(z>nearest)return false;
+ vec4 shade=w.x*rgba(f.tri[k].a.shade)+w.y*rgba(f.tri[k].b.shade)+w.z*rgba(f.tri[k].c.shade);
+ vec4 tex=f.tri[k].fmt==0u?shade:sampleTex(k,w,dx*float(opt.pass>>1)/float(opt.outW),dy*220./float(opt.outH));
+ vec4 result=shadeAt(k,tex,shade);if(result.a<.5)return false;
+ color=result.rgb;nearest=z;return true;
+}
+vec3 renderWorld(vec2 pos){
+ ivec2 at=ivec2(pos);int i=indexOf(at);vec3 base=rgb(f.native[i]);uint own=idAt(i);
+ if(own==0u || f.tri[own%65536u].tag!=own)return base;
+ vec2 xy=pos-vec2(((opt.pass>>1)-416)/2,0);
+ float depth=2.;vec3 result=base;
+ if(f.valid[i]!=0u)hit(own,xy,depth,result);
+ ivec2 stepDir=ivec2(sign(fract(pos)-.5));
+ uint b=f.valid[indexOf(at+ivec2(stepDir.x,0))],c=f.valid[indexOf(at+ivec2(0,stepDir.y))],d=f.valid[indexOf(at+stepDir)];
+ if(b!=own && b!=0u)hit(b,xy,depth,result);
+ if(c!=own && c!=b && c!=0u)hit(c,xy,depth,result);
+ if(d!=own && d!=b && d!=c && d!=0u)hit(d,xy,depth,result);
+
+ return result;
+}
+uint modernPixel(ivec2 p){
+ vec2 pos=(vec2(p)+.5)*vec2(opt.pass>>1,220)/vec2(size());
+ vec3 c=renderWorld(pos);
+ int percent=opt.hud&255,anchor=opt.hud>>8;
+ if(percent>0 && (percent!=100 || anchor!=1)){
+  int w=416*percent/100,h=50*percent/100,left=((opt.pass>>1)-w)*anchor/2;
+  ivec2 q=ivec2(pos);int top=220-h;
+  if(q.y>=top && q.x>=left && q.x<left+w){
+    ivec2 src=ivec2(((opt.pass>>1)-416)/2+(q.x-left)*416/w,170+(q.y-top)*50/h);
+    c=rgb(f.native[indexOf(src)]);
+  }else if(q.y>=170){
+    float v=q.y==170?.32:q.y==171?.47:q.y==172?.22:.11;
+    c=vec3(v,v+.008,v+.03);
+  }
+ }
+ uint q=packRGB(c);return (f.tone[q>>16]<<16)|(f.tone[(q>>8)&255u]<<8)|f.tone[q&255u];
+}
+void main(){
+ ivec2 p=ivec2(gl_GlobalInvocationID.xy);if(opt.smoothTex==-1){
+  if(p.x<(opt.pass>>1) && p.y<220)f.valid[indexOf(p)]=validOwner(p);
+  return;
+ }
+ if(opt.smoothTex==-2){
+  ivec2 target=ivec2(opt.scale,opt.aa);
+  if(any(greaterThanEqual(p,target)))return;
+  vec2 src=(vec2(p)+.5)*vec2(size())/vec2(target)-.5;
+  ivec2 a=clamp(ivec2(floor(src)),ivec2(0),size()-1),b=min(a+1,size()-1);
+  vec2 t=fract(src);int w=opt.outW;
+  vec3 c=mix(mix(rgb(f.outputData[a.y*w+a.x]),rgb(f.outputData[a.y*w+b.x]),t.x),
+             mix(rgb(f.outputData[b.y*w+a.x]),rgb(f.outputData[b.y*w+b.x]),t.x),t.y);
+  f.scene[p.y*target.x+p.x]=packRGB(c);return;
+ }
+ if(any(greaterThanEqual(p,size())))return;
+ int i=p.y*size().x+p.x;
+ if((opt.pass&1)==1){f.outputData[i]=packRGB(fxaa(p));return;}
+ uint c=opt.outH>0?modernPixel(p):packRGB(resolve((vec2(p)+.5)/float(opt.scale)));
+ if(opt.aa!=0)f.scene[i]=c;else f.outputData[i]=c;
+}

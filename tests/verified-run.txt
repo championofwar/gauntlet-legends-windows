@@ -1,0 +1,52 @@
+Playtest 17 matched the 11 Mountain Valley checkpoints listed below in the automated route test.
+
+Playtest 14: fixed explicit first-cycle two-tile mixing where the second cycle consumes the combined result without sampling another tile. In HD, the affected surface uses its composited native pixels. The Windows binary passed 36 synthetic rectangle and triangle colour/alpha checks with two distinct tiles, including descriptor wraparound. The previous build failed the partial-opacity case. Tower and Mountain Valley tests use simulated Win32 hardware. The one-time World 2 gate opening remains unverified.
+2560 b521f4a442b33276
+3160 954acdba67f7ad8d
+3335 af773e33a9f255be
+3455 fcd7e8449c9a3260
+3505 61817cccca0c7b25
+3510 2e39b5579bf9bb2c
+3770 6401db09008c4cf1
+4170 293f9142214e66e4
+4175 93e35b7cfea16e67
+4335 425b6e46c4392bc8
+4600 8af331878d389825
+audio buffers 8813 non-silent 6932
+missing 0 native audio tasks 4607 other audio tasks 0
+
+Prior builds
+Playtest 13: exercised Back to Controls for Xbox, PS4, and PS5 in the packaged Windows executable with simulated Win32 controls. Verified the button label and position, return page, restored controls and focus. Default-on CPU boost and F5 repeat/interrupt checks passed.
+
+Playtest 12: verified that the release Windows binary starts with extra guest CPU time enabled. F5 toggles for the current session and ignores held-key repeats. The delay-slot interrupt regression passed. Cold-boot route results under simulated Windows devices follow.
+2560 b521f4a442b33276
+3160 954acdba67f7ad8d
+3335 af773e33a9f255be
+3455 fcd7e8449c9a3260
+3505 61817cccca0c7b25
+3510 2e39b5579bf9bb2c
+3770 6401db09008c4cf1
+4170 293f9142214e66e4
+4175 93e35b7cfea16e67
+4335 e9f8ad3fb0121620
+4600 6a37fd45adb62bc7
+audio buffers 8813 non-silent 6932
+missing 0 native audio tasks 4607 other audio tasks 0
+
+Prior releases
+Playtest 11, optional F5 guest CPU boost. Windows x64 release PE exercised with simulated input/audio and a CPU capture at 16:9 with 1440p geometry tracking. The hardware event clock remained at baseline. A delay-slot regression checked that a pending timer interrupt was serviced before the extra instruction.
+
+The first 2,560 simulated scans ran at the default speed. Spawn frame and the PCM stream through spawn matched 10. Enabling F5 at scan 2,560 produced 599 distinct scanout images from 600 updates on the same movement input, versus 390 on 10. Across scans 2560 to 3454, before host smoothing, 10 repeated 240 non-silent audio blocks exactly eight buffers later. The boosted replay had zero such repeats. This measures guest output per scan, not real-time frame rate on a graphics card. Actual Windows presentation, sound and input latency require hardware testing.
+
+
+Playtest 10 is a diagnostic update. The baseline Playtest 09 test record follows.
+
+Towerbound Static Playtest 09 — Windows x64 verification
+
+The release PE was exercised on Linux x64 with Windows API adapters for input, audio, window messages and scheduling. The intro-to-Mountain Valley run matched all 11 Playtest 08 reference frame checksums. It submitted 8,822 audio buffers with no missing guest instructions. Keyboard-only tower movement and its final audio checksum matched the equivalent simulated controller route.
+
+Four launcher pages, visibility, 56 nonoverlapping key hit targets, remapping, saved bindings, defaults and axis handling passed. The HD audio queue reprimed to 191 ms after the simulated stall, versus 139 ms in 08. Across two simulated stalls, underruns stayed at one in 09. The release timer handler offered 183 of 183 distinct tower scans for presentation, versus 163 of 183 in 08, under the same simulated delay schedule. These are simulated handoffs, not hardware frame rates.
+
+Graphics handlers accepted world resolution Original through 2160p, Off/4x/8x/16x AF, the overlay setting, windowed/borderless changes and sample window sizes from 1280x720 to 2560x1440. Original-path pixel comparisons on Mountain Valley verified 1x/2x/3x scale, edge AA, texture smoothing, all size/anchor combinations for the HUD and every brightness and gamma stop. Restoring neutral controls produced the identical frame.
+
+HD shader checks replayed a captured Mountain Valley frame through the release compute shader source on Mesa's llvmpipe software backend. The test adapted the shader parameter binding for OpenGL. The Windows game uses Vulkan. At 1280x720, FXAA changed 205,478 pixels. AF Off to 4x changed 579,657 pixels, 4x to 8x changed 517, and 8x to 16x changed 125. Brightness, gamma, HUD scaling and anchors changed the output. The shader produced frames at 1280x720, 1920x1080, 2560x1440 and 3840x2160 and restored the neutral frame exactly. Physical Windows display, Vulkan driver timing and audible output still need a hardware playtest.
